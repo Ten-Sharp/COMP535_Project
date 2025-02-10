@@ -228,26 +228,28 @@ public class Router {
 		clientSocket = new Socket("127.0.0.1", pre + processPort);
 		out = new PrintWriter(clientSocket.getOutputStream(), true);
 		in = new BufferedReader (new InputStreamReader(clientSocket.getInputStream()));
-		System.out.println("sent message");
+		System.out.println("Sent message");
 		//we send the conection request, which also encodes the info about the client
 		out.println("HELLOX"+processIP+"X"+Short.toString(homePort)+"X"+simulatedIP);
 		String res = in.readLine(); //we wait for the response
-		if (res.equalsIgnoreCase("y")) {
-	        // Connection accepted, complete the link setup.
-			RouterDescription remote = new RouterDescription();
-			remote.processIPAddress = processIP;
-			remote.processPortNumber = processPort;
-			remote.simulatedIPAddress = simulatedIP;
-			RouterDescription local = new RouterDescription();
-			local.processIPAddress = processIP;
-			local.processPortNumber = homePort;
-			local.simulatedIPAddress = rd.simulatedIPAddress;
-	        Link link = new Link(local, remote);
-	        ports[homePort] = link;
-	        System.out.println("Connection established with " + simulatedIP);
-	    } else {
-	        System.out.println("Your attach request has been \nrejected;");
-	    }
+		if (res != null) {
+			if (res.equalsIgnoreCase("y")) {
+		        // Connection accepted, complete the link setup.
+				RouterDescription remote = new RouterDescription();
+				remote.processIPAddress = processIP;
+				remote.processPortNumber = processPort;
+				remote.simulatedIPAddress = simulatedIP;
+				RouterDescription local = new RouterDescription();
+				local.processIPAddress = processIP;
+				local.processPortNumber = homePort;
+				local.simulatedIPAddress = rd.simulatedIPAddress;
+		        Link link = new Link(local, remote);
+		        ports[homePort] = link;
+		        System.out.println("Connection established with " + simulatedIP);
+		    } else {
+		        System.out.println("Your attach request has been \nrejected;");
+		    }
+		}
 	  } catch (IOException e) {
 		System.out.println("Connection Error\nMake sure other router is live or that the IP address is valid");
 		//e.printStackTrace();
@@ -447,10 +449,10 @@ public class Router {
 		      processNeighbors();
 		    } else {
 		      //invalid command
-		      break;
+		      System.out.println("Invalid Command");
+		      //break;
 		    }
 		    System.out.print(">> ");
-		    command = consoleInputQueue.poll();
 		  }
       }
     } catch (Exception e) {
