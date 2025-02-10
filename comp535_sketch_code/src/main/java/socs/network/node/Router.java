@@ -9,6 +9,7 @@ import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 public class Router {
@@ -16,6 +17,10 @@ public class Router {
   protected LinkStateDatabase lsd;
 
   RouterDescription rd = new RouterDescription();
+  
+  //tells if a service thread is using the terminal
+  //used to sognal the terminal thread to stop
+  AtomicBoolean serviceThread = new AtomicBoolean(false);
   
   short portPrefix;//used to ensure that all serverSockets are on different ports
   private ConcurrentLinkedQueue<String> consoleInputQueue = new ConcurrentLinkedQueue<String>();
@@ -50,10 +55,14 @@ public class Router {
   
   //gives the portPrefix for the given simulatedIP address
   //used for socket communication since we are using the loopback address
-  //we take the bottom 2 bytes of the simulatedIP address, may change this sine it wont work
+  //we take the bottom 2 bytes of the simulatedIP address, may change this since it wont work
   //for simulatedIP addresses with equal bottom 2 bytes but different top 2 bytes
   public short getPortPrefix(String simulatedIP) {
 	  String[] tmp = simulatedIP.split("\\.");
+	  if(tmp.length != 4) {
+		  //invalid IP
+		  return -1;
+	  }
 	  int ipNum = Integer.parseInt(tmp[2]) * 256 + //2^8
               Integer.parseInt(tmp[3]);
 	  if(ipNum < 3000) {//to avoid getting reserved port numbers
@@ -67,7 +76,7 @@ public class Router {
   public class PortListener extends Thread{
 	  ServerSocket serverSocket;
 	  short port;
-	  volatile boolean serverOn = true;
+	  AtomicBoolean serverOn = new AtomicBoolean(true);
 	  final Object serverSocketLock = new Object();
 	  
 	  public PortListener(short port) {
@@ -85,17 +94,17 @@ public class Router {
 			  e.printStackTrace();
 			  System.exit(-1); 
 		  }
-		  while (serverOn) {
+		  while (serverOn.get()) {
 			  try {
 				Socket clientSocket = serverSocket.accept();
 				//code bellow called after we get a connection request
 				//since accept blocks until a client connect to port
-				if(serverOn) {//we have to check again
+				if(serverOn.get()) {//we have to check again
 					ClientServiceThread service = new ClientServiceThread(clientSocket,port,serverSocket);
 					service.start();
 				}
 			  } catch (IOException e) {
-				if (serverOn) {
+				if (serverOn.get()) {
 					//abnormal behavior if accept is closed while portListener
 					//is still supposed to be listening
 					System.out.println("Exception encountered on accept");
@@ -118,7 +127,7 @@ public class Router {
 	  
 	  //used to close serverSockets
 	  public void closeServerSocket() {
-		  serverOn = false;
+		  serverOn.set(false);
 		  synchronized(serverSocketLock) {
 			  try {
 				  if (serverSocket != null) {
@@ -191,23 +200,32 @@ public class Router {
    * NOTE: this command should not trigger link database synchronization
    */
   private synchronized void processAttach(String processIP, short processPort, String simulatedIP) {
-	  // we map simulatedIP to processIP and ProcessPort
-	  //first we find an available port on our current router
+	  
+	  //prevent connecting to self
+	  if (simulatedIP.equals(rd.simulatedIPAddress)) {
+		  System.out.println("Cannot attach to self");
+		  return;
+	  }
+	  
+	  // find an available port on our current router
 	  short homePort = getFreePort();
 	  if (homePort == -1) {
 		  //means there is no free port
 		  System.out.println("Ports are all occupied, the connection shall not be established");
 		  return;
 	  }
-	  //TODO
-	  System.out.println("hi");
 	  Socket clientSocket = null;
 	  PrintWriter out = null;
 	  BufferedReader in = null;
+		short pre = getPortPrefix(simulatedIP);
+		if(pre == -1) {
+			System.out.println("IP address must be in decimal IPv4 format: xxx.xxx.xxx.xxx");
+			return;
+		}
 	  try {
 		//we use the loopback address, to find the actual router, we use a mapping
 		//simulatedIP -> unique port on loopback address
-		clientSocket = new Socket("127.0.0.1", getPortPrefix(simulatedIP) + processPort);
+		clientSocket = new Socket("127.0.0.1", pre + processPort);
 		out = new PrintWriter(clientSocket.getOutputStream(), true);
 		in = new BufferedReader (new InputStreamReader(clientSocket.getInputStream()));
 		System.out.println("sent message");
@@ -228,16 +246,23 @@ public class Router {
 	        ports[homePort] = link;
 	        System.out.println("Connection established with " + simulatedIP);
 	    } else {
-	        System.out.println("Your attach request has been \n rejected;");
+	        System.out.println("Your attach request has been \nrejected;");
 	    }
 	  } catch (IOException e) {
-		e.printStackTrace();
+		System.out.println("Connection Error\nMake sure other router is live or that the IP address is valid");
+		//e.printStackTrace();
 	  } finally {
 		//close our ressources
 		try {
-			clientSocket.close();
-			out.close();
-			in.close();
+			if (clientSocket != null) {
+				clientSocket.close();
+			}
+			if (out != null) {
+				out.close();
+			}
+			if (in != null) {
+				in.close();
+			}
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -250,6 +275,7 @@ public class Router {
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
   private void requestHandler(Socket clientSocket, short port, ServerSocket serverSocket) {
+	  serviceThread.set(true);//turn off the terminal
 	  BufferedReader in = null;
 	  PrintWriter out = null;
 	  try {
@@ -265,13 +291,15 @@ public class Router {
 		      //IF NOT we must change the above logic a bit
 		      synchronized(ports) {
 			      if(msg.equals("HELLO")) {
-			    	  System.out.println("received HELLO from " + clientInfo[1]);
-			    	  if (ports[portPrefix - port] != null) {
+			    	  System.out.println("\nreceived HELLO from " + clientInfo[1]);
+			    	  if (ports[port-portPrefix] != null) {
 			    		  //means that the request port is unavailable
 			    		  //inform server
 			    		  System.out.println("Requested port is occupied, the connection shall not be established");
 			    		  //inform client
 			    		  out.println("Requested port is occupied, the connection shall not be established");
+			    		  serviceThread.set(false);
+			    		  startTerminal();
 			    		  return;
 			    	  }
 			    	  System.out.print("Do you accept this request? (Y/N) \n");
@@ -292,11 +320,11 @@ public class Router {
 			    		  remote.processIPAddress = clientInfo[1];
 			    		  remote.simulatedIPAddress = clientInfo[3];
 			    		  RouterDescription local = new RouterDescription();
-			    		  local.processPortNumber = (short) (portPrefix - port);
+			    		  local.processPortNumber = (short) (port - portPrefix);
 			    		  local.processIPAddress = clientInfo[1];
 			    		  local.simulatedIPAddress = rd.simulatedIPAddress;
 			    		  Link link = new Link(local, remote);
-			    		  ports[portPrefix - port] = link;
+			    		  ports[port-portPrefix]= link;
 			    	  } else {
 			    		  System.out.println("You rejected the attach request;");
 			    		  out.println("n"); //send response to client
@@ -307,12 +335,18 @@ public class Router {
 			      }
 		      }
 	      }
+	      serviceThread.set(false);
+		  startTerminal();
 	  } catch (IOException e) {
 		e.printStackTrace();
 	  } finally {
 	      try {
-			in.close();
-		    out.close();
+	    	if (in != null) {
+	    		in.close();
+	    	}
+	    	if (in != null) {
+	    		out.close();
+	    	}
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -351,6 +385,7 @@ public class Router {
 	  //TODO
 	  //needs to trigger LSD Synchronization and Multicast quit packets
 	  
+	  serviceThread.set(true);//turn off the terminal
 	  
       if (consoleReader != null){
           try {
@@ -359,7 +394,7 @@ public class Router {
               e.printStackTrace();
           }
       }
-	  
+      
 	  //Turn off all 4 portListeners
 	  for(PortListener portListener: portListeners) {
 		  portListener.closeServerSocket();
@@ -374,10 +409,18 @@ public class Router {
 	  System.exit(0);
   }
   
+  //to start the terminal
+  public void startTerminal() {
+  //start a spearate thread for the terminal
+    new Thread(() -> {
+    	terminal();
+    }).start();
+  }
+  
   public void terminal() {
     try {
       System.out.print(">> ");
-      while (true) {
+      while (!serviceThread.get()) {
     	  String command = consoleInputQueue.peek();
     	  if (command != null) {
     		  consoleInputQueue.poll();//remove head
