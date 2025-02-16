@@ -1,13 +1,21 @@
 package socs.network.node;
 
+import socs.network.message.SOSPFPacket;
+//import socs.network.node.Router.ClientThread;
 import socs.network.util.Configuration;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -28,11 +36,16 @@ public class Router {
   //assuming that all routers are with 4 ports
   Link[] ports = new Link[4];
   PortListener[] portListeners = new PortListener[4];
+  PortManager[] portManagers = new PortManager[4];
+  
+//  MultiThreadedServer server = new MultiThreadedServer();
+//  boolean serverOn = false;
 
   public Router(Configuration config) {
     rd.simulatedIPAddress = config.getString("socs.network.router.ip");
     lsd = new LinkStateDatabase(rd);
     portPrefix = getPortPrefix(rd.simulatedIPAddress);
+    rd.processIPAddress = getProcessIP();
     
     // start a separate thread to read console input
     new Thread(() -> {
@@ -46,12 +59,33 @@ public class Router {
         }
     }).start();
     
+    
+    
     //we start server Threads for each port
     for(short i=0; i < 4; i++) {
-    	portListeners[i] = new PortListener((short) (portPrefix + i));
-    	portListeners[i].start();
+//    	portListeners[i] = new PortListener((short) (portPrefix + i));
+//    	portListeners[i].start();
+    	portManagers[i] = new PortManager((short) (portPrefix + i),i);
+    	portManagers[i].start();
     }
   }
+  
+  
+  public String getProcessIP(){
+
+        try {
+//            Process process = Runtime.getRuntime().exec("hostname -I");
+//            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+//            String ip = reader.readLine();
+            String ip = InetAddress.getLocalHost().toString();
+            return ip.split("/")[1];
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        
+        return null;
+  }
+  
   
   //gives the portPrefix for the given simulatedIP address
   //used for socket communication since we are using the loopback address
@@ -70,6 +104,288 @@ public class Router {
 	  }
 	  return (short) ipNum;
   }
+  
+  public class PortManager extends Thread{
+	  short port;
+	  short machine_port;
+	  final Object serverSocketLock = new Object();
+	  AtomicBoolean port_running = new AtomicBoolean(true);
+	  ServerManager server;
+	  ClientManager client;
+	  BlockingQueue<SOSPFPacket> msg_queue;
+	  AtomicBoolean started = new AtomicBoolean(false);
+	  
+	  public PortManager(short machine_port,short port) {
+		  this.machine_port = machine_port;
+		  this.port = port;
+		  this.msg_queue = new LinkedBlockingQueue<>();
+	  }
+	  
+	  public void run() {
+		  server = new ServerManager(this,machine_port);
+		  server.start();
+		  
+		  //Keeps the server manager on until an interrupt is called to end the thread for cleanup
+		  while(port_running.get()) {
+			  if(server.isInterrupted())
+				  port_running.set(false);
+			  try {
+				Thread.sleep(1000);
+			  }
+			  catch(InterruptedException e) {
+				  e.printStackTrace();
+			  }
+		  }
+	  }
+	  
+	  //initalizes a client manager using a new client socket to be output for a specific port
+	  public void initClient(String HostAddress,int connectedPort) {
+		  try {
+			Socket client = new Socket(HostAddress,connectedPort);
+			this.client = new ClientManager(this,client);
+			  this.client.start();
+			
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		  
+	  }
+	  
+	  //Initializes a client manager for a specific port using an already existing client socket
+	  //The ObjectOutputStream is passed to make sure only one output stream per socket
+	  //reuses the client socket from the attach function
+	  public void initClient(Socket client,ObjectOutputStream out) {
+		  this.client = new ClientManager(this,client,out);
+		  this.client.start();
+	  }
+	  
+	  //finds the ports index of a router with a specific simulated IP
+	  public int findRouterIndex(String simulatedIP) {
+		  System.out.println("Searched IP: "+simulatedIP);
+		  synchronized(ports) {
+			  for(int i =0;i<ports.length;i++) {
+				  if(ports[i]!=null && ports[i].router2.simulatedIPAddress.equals(simulatedIP)) {
+					  System.out.println(ports[i].router2.simulatedIPAddress);
+					  return i;
+				  }
+			  }
+			  
+			  return -1;
+		  }
+	  } 
+	  
+	  //Function for processing messages, simple for now just to allow for start to work but can be changes for different types of packets in the future
+	  public void processMsg(SOSPFPacket msg) {
+		  System.out.println(msg.srcIP);
+		  System.out.println(msg.srcProcessIP);
+		  System.out.println(msg.dstIP);
+		  System.out.println(msg.srcProcessPort);
+		  //process and tell what client needs to send
+		  if(!this.started.get()) {
+			  start_msg(msg);
+		  }		  
+	  }
+	  
+	  //Sends a message out from the port by adding a packet to the blocking queue for the client socket to then pick up
+	  public void sendMsg(SOSPFPacket msg) {
+		  try {
+			msg_queue.put(msg);
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	  }
+	  
+	  //Message processing for start function, this is used when start is called but not when attach is called
+	  public void start_msg(SOSPFPacket msg) {
+		  if(msg.sospfType == 0) {
+			  //update router descriptions in link
+			  int idx = findRouterIndex(msg.srcIP);
+			  synchronized(ports) {
+				  RouterDescription r2 = ports[idx].router2;
+				  if(r2.status == null) {
+					  if(rd.status == RouterStatus.INIT) {
+						  r2.status = RouterStatus.TWO_WAY;
+						  
+						  SOSPFPacket send_msg = new SOSPFPacket();
+						  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
+						  send_msg.sospfType = 0;
+						  send_msg.srcIP = rd.simulatedIPAddress;
+						  send_msg.srcProcessIP = rd.processIPAddress;
+						  send_msg.srcProcessPort = rd.processPortNumber;
+						  //send msg
+						  this.started.set(true);
+						  
+						  try {
+							  msg_queue.put(send_msg);
+							  
+						  }
+						  catch(InterruptedException e) {
+							  e.printStackTrace();
+						  }
+					  }
+					  else {
+						  r2.status = RouterStatus.INIT;
+						  
+						  SOSPFPacket send_msg = new SOSPFPacket();
+						  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
+						  send_msg.sospfType = 0;
+						  send_msg.srcIP = rd.simulatedIPAddress;
+						  send_msg.srcProcessIP = rd.processIPAddress;
+						  send_msg.srcProcessPort = rd.processPortNumber;
+						  //send msg
+						  try {
+							  msg_queue.put(send_msg);
+							  
+						  }
+						  catch(InterruptedException e) {
+							  e.printStackTrace();
+						  }
+					  }
+				  }
+				  else if(r2.status == RouterStatus.INIT){
+					  r2.status = RouterStatus.TWO_WAY;		  
+				  }
+			  }
+			  
+		  }
+		  else if(msg.sospfType == 1) {
+			  //link state update
+		  }
+			  
+		  
+	  }
+	  	  
+  }
+  
+  //server manager for server socket (input) for a specific port
+  class ServerManager extends Thread{
+	  PortManager manager;
+	  Socket client;
+	  ServerSocket server;
+	  short port;
+	  AtomicBoolean serverOn = new AtomicBoolean(true);
+	  AtomicBoolean clientConnected = new AtomicBoolean(false);
+	  ObjectInputStream in = null;
+	  
+	  public ServerManager(PortManager manager,short port) {
+		  this.manager = manager;
+		  this.port = port;
+	  }
+	  
+	  public void run() {
+		  try {
+			  server = new ServerSocket(port);
+		  }
+		  catch(IOException e) {
+			  e.printStackTrace();
+		  }
+		  
+		  while(serverOn.get()) {
+			  //stops nd closes server socket when thread interrupted, used for clean up later from port manager
+			  if(Thread.currentThread().isInterrupted()) {
+				  break;
+			  }
+			  try {
+				  client = server.accept();
+				  in = new ObjectInputStream(client.getInputStream());
+				  
+				  while(!client.isClosed()) {
+					  Object msg1 = in.readObject();
+					  SOSPFPacket msg = (SOSPFPacket) msg1;
+					  
+					  //if a client is not yet connected send to request handler for attach functionality
+					  //if a client is succesfully attached, it skips this and sends messages to processMsg in port manager
+					  if(!clientConnected.get()) {
+						  boolean result = requestHandler(client,msg.srcProcessPort,server,msg);
+						  if(result) {
+//								  Socket send_client = new Socket(msg.srcProcessIP,(getPortPrefix(msg.srcIP)+msg.srcProcessPort));
+							  manager.initClient(rd.processIPAddress,(getPortPrefix(msg.srcIP)+msg.srcProcessPort));
+							  clientConnected.set(true);
+						  }
+					  }
+					  else {
+						  manager.processMsg(msg);
+					  }
+				  }
+			  }
+			  catch(IOException e) {
+				  e.printStackTrace();
+			  } catch (ClassNotFoundException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+		  }
+		  try {
+			server.close();
+			in.close();
+//			out.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	  }
+	  
+  }
+  
+  //client socket manager for each port
+  class ClientManager extends Thread{
+	  PortManager manager;
+	  short sendPort;
+	  Socket client;
+	  ObjectOutputStream out = null;
+//	  BufferedReader in = null;
+	  
+	  //overloaded constructors to allow for it to be initialized with a socket that has an existing out stream
+	  public ClientManager(PortManager manager,Socket client) {
+		  
+		  this.manager = manager;
+		  this.client = client;
+		  try {
+				this.out = new ObjectOutputStream(client.getOutputStream());
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+	  }
+	  
+	  public ClientManager(PortManager manager, Socket client, ObjectOutputStream out) {
+		  this.manager = manager;
+		  this.client = client;
+		  this.out = out;
+	  }
+	  
+	  public void run() {
+		  try {
+
+			  //While thread is not interrupted it waits for packets to appear on the Blocking queue and sends them when one appears
+			  while(!Thread.currentThread().isInterrupted()) {
+				  
+				  SOSPFPacket msg = manager.msg_queue.take();
+
+				  out.writeObject(msg);
+				  out.flush();
+			  }
+		  }
+		  catch(IOException e) {
+			  e.printStackTrace();
+		  } 
+		  catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		
+		try {
+			client.close();
+			out.close();
+//			in.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		
+	  }
+  }
+  
   
   //used to have threads listening to each of the 4 ports
   //of the router instance
@@ -140,6 +456,7 @@ public class Router {
 	  }
   }
   
+  
   //enables us to handle concurrent requests on the same port
   //for the same router instance, we handle the request with
   //request handler
@@ -156,7 +473,7 @@ public class Router {
 	  
 	  @Override
 	  public void run() {
-		  requestHandler(clientSocket, port, serverSocket);
+//		  requestHandler(clientSocket, port, serverSocket);
 	  }
   }
   
@@ -215,8 +532,10 @@ public class Router {
 		  return;
 	  }
 	  Socket clientSocket = null;
-	  PrintWriter out = null;
+	  ObjectOutputStream out = null;
 	  BufferedReader in = null;
+
+
 		short pre = getPortPrefix(simulatedIP);
 		if(pre == -1) {
 			System.out.println("IP address must be in decimal IPv4 format: xxx.xxx.xxx.xxx");
@@ -226,12 +545,28 @@ public class Router {
 		//we use the loopback address, to find the actual router, we use a mapping
 		//simulatedIP -> unique port on loopback address
 		clientSocket = new Socket("127.0.0.1", pre + processPort);
-		out = new PrintWriter(clientSocket.getOutputStream(), true);
+		out = new ObjectOutputStream(clientSocket.getOutputStream());
 		in = new BufferedReader (new InputStreamReader(clientSocket.getInputStream()));
-		System.out.println("Sent message");
+//		in = new ObjectInputStream(clientSocket.getInputStream());
+		
+		//Now sends SOSPFPackets instead of HELLO string msg, works the same though
+		SOSPFPacket msg = new SOSPFPacket();
+		msg.srcProcessIP = rd.processIPAddress;
+		msg.dstIP = simulatedIP;
+		msg.sospfType = 0;
+		msg.srcProcessPort = processPort;
+		msg.srcIP = rd.simulatedIPAddress;
+		
+		System.out.println("Sent message: "+simulatedIP);
 		//we send the conection request, which also encodes the info about the client
-		out.println("HELLOX"+processIP+"X"+Short.toString(homePort)+"X"+simulatedIP);
+//		out.println("HELLOX"+processIP+"X"+Short.toString(homePort)+"X"+simulatedIP);
+		out.writeObject(msg);
+		out.flush();
+		
+
 		String res = in.readLine(); //we wait for the response
+//		String res = (String) in.readObject();
+		
 		if (res != null) {
 			if (res.equalsIgnoreCase("y")) {
 		        // Connection accepted, complete the link setup.
@@ -245,29 +580,41 @@ public class Router {
 				local.simulatedIPAddress = rd.simulatedIPAddress;
 		        Link link = new Link(local, remote);
 		        ports[homePort] = link;
+		        //if connection is accepted initialized the client manager with the existing socket
+		        portManagers[homePort].initClient(clientSocket,out);
+		        portManagers[homePort].server.clientConnected.set(true);
 		        System.out.println("Connection established with " + simulatedIP);
 		    } else {
 		        System.out.println("Your attach request has been \nrejected;");
+		        clientSocket.close();
 		    }
 		}
 	  } catch (IOException e) {
 		System.out.println("Connection Error\nMake sure other router is live or that the IP address is valid");
+		try {
+			clientSocket.close();
+		} catch (IOException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
 		//e.printStackTrace();
 	  } finally {
-		//close our ressources
-		try {
-			if (clientSocket != null) {
-				clientSocket.close();
-			}
-			if (out != null) {
-				out.close();
-			}
-			if (in != null) {
-				in.close();
-			}
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
+//		  try {
+//			  if (clientSocket != null) {
+//					clientSocket.close();
+//				}
+//				if (out != null) {
+//					out.close();
+//				}
+//				if (in != null) {
+//					in.close();
+//				}
+//		  }catch(IOException e) {
+//			  e.printStackTrace();
+//		  }
+			
+//			out = null;
+//			in = null;
 	  }
   }
 
@@ -276,24 +623,30 @@ public class Router {
    * For example: when router2 tries to attach router1. Router1 can decide whether it will accept this request. 
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
-  private void requestHandler(Socket clientSocket, short port, ServerSocket serverSocket) {
-	  serviceThread.set(true);//turn off the terminal
-	  BufferedReader in = null;
+  private boolean requestHandler(Socket clientSocket, int port, ServerSocket serverSocket, SOSPFPacket msg) {
+//	  serviceThread.set(true);//turn off the terminal
+	  ObjectInputStream in = null;
 	  PrintWriter out = null;
+//	  ObjectOutputStream out = null;
+
 	  try {
-	      in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+//	      in = new ObjectInputStream(clientSocket.getInputStream());
 	      out = new PrintWriter(clientSocket.getOutputStream(), true); 
-	      
-	      String msg = in.readLine();
+//		  out = new ObjectOutputStream(clientSocket.getOutputStream());
+		  
+	      if(msg == null)
+	    	  System.out.println("MSG IS NULL");
+//	      SOSPFPacket msg = (SOSPFPacket) in.readObject();
 	      if (msg != null) {
 		      //parse the message
-		      String[] clientInfo = msg.split("X");
-		      msg = clientInfo[0];
+//		      String[] clientInfo = msg.split("X");
+//		      msg = clientInfo[0];
+	    	  port = getPortPrefix(msg.dstIP) + port;
 		      //for now we assume that request handler is only used for the attach command
 		      //IF NOT we must change the above logic a bit
 		      synchronized(ports) {
-			      if(msg.equals("HELLO")) {
-			    	  System.out.println("\nreceived HELLO from " + clientInfo[1]);
+			      if(msg.sospfType == 0) {
+			    	  System.out.println("\nreceived HELLO from " + msg.srcIP);
 			    	  if (ports[port-portPrefix] != null) {
 			    		  //means that the request port is unavailable
 			    		  //inform server
@@ -302,7 +655,7 @@ public class Router {
 			    		  out.println("Requested port is occupied, the connection shall not be established");
 			    		  serviceThread.set(false);
 			    		  startTerminal();
-			    		  return;
+			    		  return false;
 			    	  }
 			    	  System.out.print("Do you accept this request? (Y/N) \n");
 			    	  
@@ -315,25 +668,31 @@ public class Router {
 			    	  if (answer.equalsIgnoreCase("y")) {
 			    		  System.out.println("You accepted the attach request;");
 			    		  out.println("y"); //send response to client
-			    		  out.flush();
 			    		  //add the link on the server side
 			    		  RouterDescription remote = new RouterDescription();
-			    		  remote.processPortNumber = Short.parseShort(clientInfo[2]);
-			    		  remote.processIPAddress = clientInfo[1];
-			    		  remote.simulatedIPAddress = clientInfo[3];
+//			    		  remote.processPortNumber = Short.parseShort(clientInfo[2]);
+			    		  remote.processPortNumber = msg.srcProcessPort;
+//			    		  remote.processIPAddress = clientInfo[1];
+//			    		  remote.simulatedIPAddress = clientInfo[3];
+			    		  remote.processIPAddress = msg.srcProcessIP;
+			    		  remote.simulatedIPAddress = msg.srcIP;
 			    		  RouterDescription local = new RouterDescription();
 			    		  local.processPortNumber = (short) (port - portPrefix);
-			    		  local.processIPAddress = clientInfo[1];
+//			    		  local.processIPAddress = clientInfo[1];
+			    		  local.processIPAddress = rd.processIPAddress;
 			    		  local.simulatedIPAddress = rd.simulatedIPAddress;
 			    		  Link link = new Link(local, remote);
 			    		  ports[port-portPrefix]= link;
+			    		  
+			    		  return true;
 			    	  } else {
 			    		  System.out.println("You rejected the attach request;");
 			    		  out.println("n"); //send response to client
-			    		  out.flush();
+			    		  return false;
 			    	  } 
 			      } else {
 			    	  out.println("Invalid request");
+			    	  return false;
 			      }
 		      }
 	      }
@@ -342,24 +701,40 @@ public class Router {
 	  } catch (IOException e) {
 		e.printStackTrace();
 	  } finally {
-	      try {
-	    	if (in != null) {
-	    		in.close();
-	    	}
-	    	if (in != null) {
-	    		out.close();
-	    	}
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
+//	      try {
+//	    	if (in != null) {
+//	    		in.close();
+//	    	}
+//	    	if (in != null) {
+//	    		out.close();
+//	    	}
+//		} catch (IOException e) {
+//			e.printStackTrace();
+//		}
 	  }
+	  
+	  return false;
   }
+
 
 /**
    * broadcast Hello to neighbors
    */
   private void processStart() {
-
+	  rd.status = RouterStatus.INIT;
+	  for(int idx = 0;idx<ports.length;idx++) {
+		  if(ports[idx] != null) {
+			  SOSPFPacket msg = new SOSPFPacket();
+			  msg.dstIP = ports[idx].router2.simulatedIPAddress;
+			  msg.sospfType = 0;
+			  msg.srcIP = this.rd.simulatedIPAddress;
+			  msg.srcProcessIP = this.rd.processIPAddress;
+			  msg.srcProcessPort = this.rd.processPortNumber;
+			  
+			  portManagers[idx].sendMsg(msg);
+		  }
+	  }
+	  
   }
 
   /**
@@ -372,12 +747,23 @@ public class Router {
                               String simulatedIP) {
 
   }
+  
+  private void description() {
+		System.out.println("simulated Ip: "+rd.simulatedIPAddress);
+		System.out.println("Process Ip: "+rd.processIPAddress);
+		System.out.println("Process port #: "+rd.processPortNumber);
+		System.out.println("Status: "+rd.status);
+	}
 
   /**
    * output the neighbors of the routers
    */
   private void processNeighbors() {
-
+	  System.out.println("Neighbors:");
+	  for(Link link : ports) {
+		  if(link != null)
+			  System.out.println("\t"+link.router2.simulatedIPAddress + " - status: "+link.router2.status);
+	  }
   }
 
   /**
@@ -447,6 +833,8 @@ public class Router {
 		    } else if (command.equals("neighbors")) {
 		      //output neighbors
 		      processNeighbors();
+		    } else if (command.equals("description")) {
+		    	description();
 		    } else {
 		      //invalid command
 		      System.out.println("Invalid Command");
@@ -459,4 +847,5 @@ public class Router {
       e.printStackTrace();
     }
   }
+
 }
