@@ -257,6 +257,15 @@ public class Router {
 		  return;
 	  }
 	  
+//	  for(int i=0;i<ports.length;i++) {
+//		  if(ports[i]!=null) {
+//			  if(ports[i].router2.simulatedIPAddress.equals(simulatedIP)) {
+//				  System.out.println();
+//				  return;
+//			  }
+//		  }
+//	  }
+	  
 	  // find an available port on our current router
 	  short homePort = getFreePort();
 	  if (homePort == -1) {
@@ -286,7 +295,7 @@ public class Router {
 		
 		SOSPFPacket msg = new SOSPFPacket();
 		msg.dstIP = simulatedIP;
-		msg.sospfType = 0;
+		msg.sospfType = 2;
 		msg.srcIP = this.rd.simulatedIPAddress;
 		msg.srcProcessIP = this.rd.processIPAddress;
 		msg.srcProcessPort = homePort;
@@ -415,7 +424,7 @@ public class Router {
 		    			  startTerminal();
 		    		  }
 		    	  }
-		    	  else if (msg.sospfType == 0) {
+		    	  else if (msg.sospfType == 2) {
 		    		  serviceThread.set(true);//turn off the terminal
 	    			  attachRequest(port,out,msg);
 	    			  serviceThread.set(false);
@@ -448,15 +457,12 @@ public class Router {
 	  try {
 		  System.out.println("\nreceived HELLO from " + msg.srcIP);
     	  if (ports[port-portPrefix] != null) {
-    		  //means that the request port is unavailable
-    		  //inform server
+
     		  System.out.println("Requested port is occupied, the connection shall not be established");
-    		  //inform client
-//    		  out.println("Requested port is occupied, the connection shall not be established");
+
     		  out.writeUTF("Requested port is occupied, the connection shall not be established");
     		  out.flush();
-    		  serviceThread.set(false);
-    		  startTerminal();
+
     		  return;
     	  }
     	  System.out.print("Do you accept this request? (Y/N) \n");
