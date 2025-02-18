@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
@@ -144,50 +143,40 @@ public class Router {
 	  }
 	  
 	  public void sendMsg(int port, SOSPFPacket msg) {
-
-			  Socket clientSocket = null;
-			  ObjectOutputStream out = null;
-			  ObjectInputStream in = null;
-//				short pre = getPortPrefix(simulatedIP);
-				
-				try {
-					clientSocket = new Socket("127.0.0.1", port);
-					out = new ObjectOutputStream(clientSocket.getOutputStream());
-					in = new ObjectInputStream(clientSocket.getInputStream());
-					
-					out.writeObject(msg);
-					out.flush();
-					
-					Thread.sleep(1000);
-					
-				} catch (UnknownHostException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (IOException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (InterruptedException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} finally {
-					//close our ressources
-					try {
-						if (clientSocket != null) {
-							clientSocket.close();
-						}
-						if (out != null) {
-							out.close();
-						}
-						if (in != null) {
-							in.close();
-						}
-					} catch (IOException e) {
-						e.printStackTrace();
-					}
+		  Socket clientSocket = null;
+		  ObjectOutputStream out = null;
+		  ObjectInputStream in = null;
+			
+		  try {
+			  clientSocket = new Socket("127.0.0.1", port);
+			  out = new ObjectOutputStream(clientSocket.getOutputStream());
+			  in = new ObjectInputStream(clientSocket.getInputStream());
+			  out.writeObject(msg);
+			  out.flush();
+			  Thread.sleep(1000);
+		  } catch (UnknownHostException e) {
+			  e.printStackTrace();
+		  } catch (IOException e) {
+			e.printStackTrace();
+		  } catch (InterruptedException e) {
+			e.printStackTrace();
+		  } finally {
+			  //close our ressources
+			  try {
+				  if (clientSocket != null) {
+					  clientSocket.close();
 				  }
-//				
-		  }
-	  
+				  if (out != null) {
+					  out.close();
+				  }
+				  if (in != null) {
+					  in.close();
+				  }
+			  } catch (IOException e) {
+				  e.printStackTrace();
+			  }
+		  }			
+	  }
   }
   
   //enables us to handle concurrent requests on the same port
@@ -257,15 +246,6 @@ public class Router {
 		  return;
 	  }
 	  
-//	  for(int i=0;i<ports.length;i++) {
-//		  if(ports[i]!=null) {
-//			  if(ports[i].router2.simulatedIPAddress.equals(simulatedIP)) {
-//				  System.out.println();
-//				  return;
-//			  }
-//		  }
-//	  }
-	  
 	  // find an available port on our current router
 	  short homePort = getFreePort();
 	  if (homePort == -1) {
@@ -285,13 +265,9 @@ public class Router {
 		//we use the loopback address, to find the actual router, we use a mapping
 		//simulatedIP -> unique port on loopback address
 		clientSocket = new Socket("127.0.0.1", pre + processPort);
-//		out = new PrintWriter(clientSocket.getOutputStream(), true);
 		out = new ObjectOutputStream(clientSocket.getOutputStream());
-//		in = new BufferedReader (new InputStreamReader(clientSocket.getInputStream()));
 		in = new ObjectInputStream(clientSocket.getInputStream());
 		System.out.println("Sent message");
-		//we send the conection request, which also encodes the info about the client
-//		out.println("HELLOX"+processIP+"X"+Short.toString(homePort)+"X"+simulatedIP);
 		
 		SOSPFPacket msg = new SOSPFPacket();
 		msg.dstIP = simulatedIP;
@@ -302,10 +278,8 @@ public class Router {
 		
 		out.writeObject(msg);
 		out.flush();
-		
-		
-//		String res = in.readLine(); //we wait for the response
-		String res = (String) in.readUTF();
+
+		String res = (String) in.readUTF(); //we wait for the response
 		if (res != null) {
 			if (res.equalsIgnoreCase("y")) {
 		        // Connection accepted, complete the link setup.
@@ -355,25 +329,17 @@ public class Router {
 	  ObjectInputStream in = null;
 	  ObjectOutputStream out = null;
 	  try {
-//	      in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
 		  in = new ObjectInputStream(clientSocket.getInputStream());
-//	      out = new PrintWriter(clientSocket.getOutputStream(), true);
 		  out = new ObjectOutputStream(clientSocket.getOutputStream());
 	      
-//	      String msg = in.readLine();
 	      SOSPFPacket msg = null;
 			try {
 				msg = (SOSPFPacket) in.readObject();
 			} catch (ClassNotFoundException e) {
-				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
 	      if (msg != null) {
 		      //parse the message
-//		      String[] clientInfo = msg.split("X");
-//		      msg = clientInfo[0];
-		      //for now we assume that request handler is only used for the attach command
-		      //IF NOT we must change the above logic a bit
 		      synchronized(ports) {
 		    	  if(ports[port-portPrefix] != null) {
 
@@ -424,13 +390,12 @@ public class Router {
 		    			  startTerminal();
 		    		  }
 		    	  }
-		    	  else if (msg.sospfType == 2) {
+		    	  else if (msg.sospfType == 2) { //attach request
 		    		  serviceThread.set(true);//turn off the terminal
 	    			  attachRequest(port,out,msg);
 	    			  serviceThread.set(false);
 	    			  startTerminal();
 			      } else {
-//			    	  out.println("Invalid request");
 			    	  out.writeChars("Invalid request");
 			    	  out.flush();
 			      }
@@ -475,8 +440,7 @@ public class Router {
     	  
     	  if (answer.equalsIgnoreCase("y")) {
     		  System.out.println("You accepted the attach request;");
-//    		  out.println("y"); //send response to client
-    		  out.writeUTF("y");
+    		  out.writeUTF("y"); //send response to client
     		  out.flush();
     		  //add the link on the server side
     		  RouterDescription remote = new RouterDescription();
@@ -491,7 +455,6 @@ public class Router {
     		  ports[port-portPrefix]= link;
     	  } else {
     		  System.out.println("You rejected the attach request;");
-//    		  out.println("n"); //send response to client
     		  out.writeUTF("n");
     		  out.flush();
     	  } 
@@ -594,9 +557,9 @@ public class Router {
     try {
       System.out.print(">> ");
       while (!serviceThread.get()) {
-    	  String command = consoleInputQueue.peek();
+    	  String command = consoleInputQueue.peek();//check for input
     	  if (command != null) {
-    		  consoleInputQueue.poll();//remove head
+    		  consoleInputQueue.poll();//remove input from buffer
 		    if (command.startsWith("detect ")) {
 		      String[] cmdLine = command.split(" ");
 		      processDetect(cmdLine[1]);
@@ -623,7 +586,6 @@ public class Router {
 		    } else {
 		      //invalid command
 		      System.out.println("Invalid Command");
-		      //break;
 		    }
 		    System.out.print(">> ");
 		  }
