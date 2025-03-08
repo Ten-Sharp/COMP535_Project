@@ -1,7 +1,11 @@
 package socs.network.node;
 
+import socs.network.message.LSA;
+import socs.network.message.LinkDescription;
 import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
+
+import static org.junit.Assert.assertNotNull;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -11,12 +15,16 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Vector;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
 public class Router {
 
+  private CountDownLatch lsa_latch;
+  private final AtomicBoolean lsa_broadcast = new AtomicBoolean(false);
   protected LinkStateDatabase lsd;
 
   RouterDescription rd = new RouterDescription();
@@ -153,7 +161,7 @@ public class Router {
 			  in = new ObjectInputStream(clientSocket.getInputStream());
 			  out.writeObject(msg);
 			  out.flush();
-			  Thread.sleep(1000);
+			  Thread.sleep(100);
 		  } catch (UnknownHostException e) {
 			  e.printStackTrace();
 		  } catch (IOException e) {
@@ -344,44 +352,91 @@ public class Router {
 		    	  if(ports[port-portPrefix] != null) {
 
 		    		  if(msg.sospfType == 0 && msg.srcIP.equals(ports[port-portPrefix].router2.simulatedIPAddress)) {
-		    			  //update router descriptions in link
-		    			  int idx = port-portPrefix;
-		    			  synchronized(ports) {
-		    				  RouterDescription r2 = ports[idx].router2;
-		    				  if(r2.status == null) {
-		    					  if(rd.status == RouterStatus.INIT) {
-		    						  r2.status = RouterStatus.TWO_WAY;
-		    						  
-		    						  SOSPFPacket send_msg = new SOSPFPacket();
-		    						  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
-		    						  send_msg.sospfType = 0;
-		    						  send_msg.srcIP = rd.simulatedIPAddress;
-		    						  send_msg.srcProcessIP = rd.processIPAddress;
-		    						  send_msg.srcProcessPort = ports[idx].router1.processPortNumber;
-		    						  //send msg
-		    						  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
-		    					  }
-		    					  else {
-		    						  r2.status = RouterStatus.INIT;
-		    						  
-		    						  SOSPFPacket send_msg = new SOSPFPacket();
-		    						  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
-		    						  send_msg.sospfType = 0;
-		    						  send_msg.srcIP = rd.simulatedIPAddress;
-		    						  send_msg.srcProcessIP = rd.processIPAddress;
-		    						  send_msg.srcProcessPort = ports[idx].router1.processPortNumber;
-		    						  //send msg
-		    						  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
-		    					  }
-		    				  }
-		    				  else if(r2.status == RouterStatus.INIT){
-		    					  r2.status = RouterStatus.TWO_WAY;		  
-		    				  }
-		    			  }
 		    			  
+		    			  boolean send_LSA_update = handleStartMsg(port,msg);
+		    			  
+		    			  if(send_LSA_update) {
+		    				  lsa_broadcast.set(send_LSA_update);
+		    				  //update LSA and increase sequence number
+		    				  LSA lsa = lsd._store.get(rd.simulatedIPAddress);
+		    				  LSA new_lsa = new LSA();
+		    				  
+		    				  new_lsa.linkStateID = rd.simulatedIPAddress;
+		    				  new_lsa.lsaSeqNumber = lsa.lsaSeqNumber + 1;
+		    				  
+		    				  for(int idx = 0;idx<ports.length;idx++) {
+		    					  Link l = ports[idx];
+		    					  if(l!=null) {
+		    						  if(l.router2.status == RouterStatus.TWO_WAY) {
+		    							  LinkDescription desc = new LinkDescription();
+		    							  desc.portNum = idx;
+		    							  desc.linkID = l.router2.simulatedIPAddress;
+		    							  new_lsa.links.add(desc);
+		    						  }
+		    					  }
+		    				  }
+		    				  
+		    				  lsd._store.put(rd.simulatedIPAddress, new_lsa);
+		    				  if(rd.status == RouterStatus.INIT)
+		    					  lsa_latch.countDown();
+		    				  
+		    				  
+
+		    			  }
 		    		  }
 		    		  else if(msg.sospfType == 1) {
 		    			  //link state update
+		    			  //update lsd based on seq number 
+		    			  boolean send_update = false;
+		    			  
+		    			  for(LSA lsa : msg.lsaArray) {
+		    				  LSA matching = lsd._store.get(lsa.linkStateID);
+		    				  if(matching != null) {
+		    					  if(matching.lsaSeqNumber < lsa.lsaSeqNumber) {
+		    						  //update lsd
+		    						  lsd._store.put(lsa.linkStateID, lsa);
+		    						  
+		    						  send_update = true;
+		    					  }
+		    				  }
+		    				  else {
+		    					  //add new to lsd
+		    					  lsd._store.put(lsa.linkStateID,lsa);
+		    					  send_update = true;
+		    				  }
+		    			  }
+		    			  
+		    			  try {
+	    					  Thread.sleep(300);
+	    				  } catch (InterruptedException e) {
+	    					  // TODO Auto-generated catch block
+	    					  e.printStackTrace();
+	    				  }
+		    			  //forward msg
+		    			  if(send_update) {
+			    			  int idx = 0;
+			    			  for(Link l : ports) {
+			    				  if(l!=null) {
+			    					  if(l.router2.simulatedIPAddress != msg.neighborID && l.router2.simulatedIPAddress != msg.srcIP) {
+				    					  msg.neighborID = rd.simulatedIPAddress;
+				    					  msg.dstIP = l.router2.simulatedIPAddress;
+				    					  
+				    					  portListeners[idx].sendMsg(l.router2.processPortNumber + getPortPrefix(msg.dstIP), msg);
+				    				  }
+			    				  }
+			    				  idx++;
+			    			  }
+			    			  
+			    			  try {
+		    					  Thread.sleep(300);
+		    				  } catch (InterruptedException e) {
+		    					  // TODO Auto-generated catch block
+		    					  e.printStackTrace();
+		    				  }
+			    			  //if there's a change causes a broadcast of own lsd
+			    			  
+			    				  broadcast_LSA();
+		    			  }
 		    		  }
 		    		  else {
 		    			  serviceThread.set(true);//turn off the terminal
@@ -400,9 +455,33 @@ public class Router {
 			    	  out.flush();
 			      }
 		      }
+		      
+		      if(rd.status == RouterStatus.INIT) {
+		    	  try {
+					  Thread.sleep(200);
+					  lsa_latch.await();
+				  } catch (InterruptedException e) {
+					  // TODO Auto-generated catch block
+					  e.printStackTrace();
+				  }
+				  
+				  
+				  //Creates a LSA_update msg for all ports with 2-way connection and sends the updates
+			      synchronized(lsa_broadcast){
+			    	  if(lsa_broadcast.get()) {
+			    		  lsa_broadcast.set(false);
+				    	  broadcast_LSA();
+			    	  }
+			      }
+			      
+			      rd.status = null;
+		      }
+		      
+			  
 	      }
 	      
 	  } catch (IOException e) {
+		lsa_latch.countDown();
 		e.printStackTrace();
 	  } finally {
 	      try {
@@ -417,6 +496,74 @@ public class Router {
 		}
 	  }
   }
+  
+  private void broadcast_LSA() {
+	  SOSPFPacket lsa_update = new SOSPFPacket();
+	  lsa_update.srcProcessIP = rd.processIPAddress;
+	  lsa_update.srcIP = rd.simulatedIPAddress;
+	  lsa_update.routerID = rd.processIPAddress;
+	  lsa_update.sospfType = 1;
+	  lsa_update.lsaArray = new Vector<>();
+	  lsa_update.lsaArray.addAll(lsd._store.values());
+	  lsa_update.neighborID = rd.simulatedIPAddress;
+	  
+	  for(int idx = 0;idx<ports.length;idx++) {
+		  Link l = ports[idx];
+		  if(l!=null) {
+			  if(l.router2.status == RouterStatus.TWO_WAY) {
+				  lsa_update.dstIP = ports[idx].router2.simulatedIPAddress;
+				  lsa_update.srcProcessPort = (short) idx;
+				  portListeners[idx].sendMsg(ports[idx].router2.processPortNumber + getPortPrefix(lsa_update.dstIP),lsa_update);
+			  }
+		  }
+	  }
+	  
+  }
+  
+  private boolean handleStartMsg(short port, SOSPFPacket msg) {
+	  boolean send_LSA_update = false;
+	//update router descriptions in link
+	  int idx = port-portPrefix;
+	  synchronized(ports) {
+		  RouterDescription r2 = ports[idx].router2;
+		  if(r2.status == null) {
+			  if(rd.status == RouterStatus.INIT) {
+				  r2.status = RouterStatus.TWO_WAY;
+				  
+				  SOSPFPacket send_msg = new SOSPFPacket();
+				  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
+				  send_msg.sospfType = 0;
+				  send_msg.srcIP = rd.simulatedIPAddress;
+				  send_msg.srcProcessIP = rd.processIPAddress;
+				  send_msg.srcProcessPort = ports[idx].router1.processPortNumber;
+				  //send msg
+				  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
+				  
+				  //SEND LSA UPDATE
+				  send_LSA_update = true;
+			  }
+			  else {
+				  r2.status = RouterStatus.INIT;
+				  
+				  SOSPFPacket send_msg = new SOSPFPacket();
+				  send_msg.dstIP = ports[idx].router2.simulatedIPAddress;
+				  send_msg.sospfType = 0;
+				  send_msg.srcIP = rd.simulatedIPAddress;
+				  send_msg.srcProcessIP = rd.processIPAddress;
+				  send_msg.srcProcessPort = ports[idx].router1.processPortNumber;
+				  //send msg
+				  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
+			  }
+		  }
+		  else if(r2.status == RouterStatus.INIT){
+			  r2.status = RouterStatus.TWO_WAY;
+			  send_LSA_update = true;
+		  }
+	  }
+	  
+	  return send_LSA_update;
+  }
+  
 
   private void attachRequest(int port, ObjectOutputStream out, SOSPFPacket msg) {
 	  try {
@@ -466,6 +613,14 @@ public class Router {
    * broadcast Hello to neighbors
    */
   private void processStart() {
+	  int count = 0;
+	  for(Link l : ports) {
+		  if(l!=null) {
+			  count++;
+		  }
+	  }
+	  
+	  lsa_latch = new CountDownLatch(count);
 	  rd.status = RouterStatus.INIT;
 	  for(int idx = 0;idx<ports.length;idx++) {
 		  if(ports[idx] != null) {
@@ -551,6 +706,7 @@ public class Router {
 		System.out.println("Process Ip: "+rd.processIPAddress);
 		System.out.println("Process port #: "+rd.processPortNumber);
 		System.out.println("Status: "+rd.status);
+		System.out.println("\n"+"LSD\n"+lsd.toString());
 	}
   
   public void terminal() {

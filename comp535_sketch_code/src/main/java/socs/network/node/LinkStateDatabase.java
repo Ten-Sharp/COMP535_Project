@@ -42,9 +42,9 @@ public class LinkStateDatabase {
   public String toString() {
     StringBuilder sb = new StringBuilder();
     for (LSA lsa: _store.values()) {
-      sb.append(lsa.linkStateID).append("(" + lsa.lsaSeqNumber + ")").append(":\t");
+      sb.append(lsa.linkStateID).append(" (" + lsa.lsaSeqNumber + ")").append(":\n").append("-------------------------------\n");
       for (LinkDescription ld : lsa.links) {
-        sb.append(ld.linkID).append(",").append(ld.portNum).append("\t");
+        sb.append("\t\t"+ld.linkID).append(" | ").append(ld.portNum).append("\n");
       }
       sb.append("\n");
     }
