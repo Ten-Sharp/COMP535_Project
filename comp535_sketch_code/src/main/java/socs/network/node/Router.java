@@ -5,8 +5,6 @@ import socs.network.message.LinkDescription;
 import socs.network.message.SOSPFPacket;
 import socs.network.util.Configuration;
 
-import static org.junit.Assert.assertNotNull;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -15,7 +13,6 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
 import java.util.Vector;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -216,7 +213,16 @@ public class Router {
    * @param destinationIP the ip adderss of the destination simulated router
    */
   private void processDetect(String destinationIP) {
-
+	  if (destinationIP.equals(rd.simulatedIPAddress)) {
+		  System.out.println("Try with an IP address other than the IP address of the current router");
+		  return;
+	  }
+	  String result = lsd.getShortestPath(destinationIP);
+	  if (result == null) {
+		  System.out.println("No Path Found");
+	  } else {
+		  System.out.println(result);  
+	  }
   }
 
   /**
@@ -356,7 +362,6 @@ public class Router {
 		    			  boolean send_LSA_update = handleStartMsg(port,msg);
 		    			  
 		    			  if(send_LSA_update) {
-		    				  System.out.println("SENDING LSA UPDATE");
 		    				  lsa_broadcast.set(send_LSA_update);
 		    				  //update LSA and increase sequence number
 		    				  LSA lsa = lsd._store.get(rd.simulatedIPAddress);
