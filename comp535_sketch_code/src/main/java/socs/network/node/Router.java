@@ -356,6 +356,7 @@ public class Router {
 		    			  boolean send_LSA_update = handleStartMsg(port,msg);
 		    			  
 		    			  if(send_LSA_update) {
+		    				  System.out.println("SENDING LSA UPDATE");
 		    				  lsa_broadcast.set(send_LSA_update);
 		    				  //update LSA and increase sequence number
 		    				  LSA lsa = lsd._store.get(rd.simulatedIPAddress);
@@ -417,7 +418,7 @@ public class Router {
 			    			  int idx = 0;
 			    			  for(Link l : ports) {
 			    				  if(l!=null) {
-			    					  if(l.router2.simulatedIPAddress != msg.neighborID && l.router2.simulatedIPAddress != msg.srcIP) {
+			    					  if(l.router2.simulatedIPAddress != msg.neighborID && l.router2.simulatedIPAddress != msg.srcIP && l.router2.status == RouterStatus.TWO_WAY) {
 				    					  msg.neighborID = rd.simulatedIPAddress;
 				    					  msg.dstIP = l.router2.simulatedIPAddress;
 				    					  
@@ -456,10 +457,12 @@ public class Router {
 			      }
 		      }
 		      
-		      if(rd.status == RouterStatus.INIT) {
+		      if(lsa_broadcast.get()) {
+		    	  
 		    	  try {
 					  Thread.sleep(200);
-					  lsa_latch.await();
+					  if(rd.status == RouterStatus.INIT)
+						  lsa_latch.await();
 				  } catch (InterruptedException e) {
 					  // TODO Auto-generated catch block
 					  e.printStackTrace();
@@ -536,11 +539,13 @@ public class Router {
 				  send_msg.srcIP = rd.simulatedIPAddress;
 				  send_msg.srcProcessIP = rd.processIPAddress;
 				  send_msg.srcProcessPort = ports[idx].router1.processPortNumber;
+				  
+				  send_LSA_update = true;
 				  //send msg
 				  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
 				  
 				  //SEND LSA UPDATE
-				  send_LSA_update = true;
+				  
 			  }
 			  else {
 				  r2.status = RouterStatus.INIT;
