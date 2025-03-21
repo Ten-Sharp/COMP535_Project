@@ -13,6 +13,7 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
+import java.util.LinkedList;
 import java.util.Vector;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -241,13 +242,12 @@ public class Router {
 	  //verify port has active connection
 	  if(link.router2.status == null) { //means that the router has not yet been started and we therefore cannot run disconnect
 		  System.out.println("The router has not yet been started and we therefore cannot run disconnect");
-		  System.out.println(rd.status);
 		  return;
 	  }
 	 
 	  String simulatedIP = link.router2.simulatedIPAddress;
 
-	  System.out.println("Trying to disconect " + simulatedIP + " from port " + portNumber); //TODO perhaps remove
+	  
 
 	  SOSPFPacket msg = new SOSPFPacket();
 	  msg.dstIP = simulatedIP;
@@ -261,6 +261,7 @@ public class Router {
 
 	  //remove from links array after the other router broadcasts the new lsa
 	  ports[portNumber] = null;
+	  System.out.println("Disconected " + simulatedIP + " from port " + portNumber);
 
   }
   
@@ -420,20 +421,17 @@ public class Router {
 		    			  //link state update
 		    			  //update lsd based on seq number 
 		    			  boolean send_update = false;
-		    			  
 		    			  for(LSA lsa : msg.lsaArray) {
 		    				  LSA matching = lsd._store.get(lsa.linkStateID);
 		    				  if(matching != null) {
-		    					  if(matching.lsaSeqNumber < lsa.lsaSeqNumber) {
-		    						  //update lsd if sequence number is newer (aka bigger)
-		    						  lsd._store.put(lsa.linkStateID, lsa);
-		    						  
+		    					  if(matching.lsaSeqNumber < lsa.lsaSeqNumber) {//update lsd since sequence number is newer (aka bigger)
+		    						  lsd._store.put(lsa.linkStateID, lsa);  
 		    						  send_update = true;
 		    					  }
 		    				  } else {
-		    					  //add new to lsd
-		    					  lsd._store.put(lsa.linkStateID,lsa);
-		    					  send_update = true;
+	    						  //add new to lsd
+	    						  lsd._store.put(lsa.linkStateID,lsa);
+	    						  send_update = true;
 		    				  }
 		    			  }
 		    			  
@@ -466,53 +464,19 @@ public class Router {
 			    			  broadcast_LSA();
 		    			  }
 		    		  } else if (msg.sospfType == 2){
-		    			  System.out.println(msg.sospfType);
 		    			  serviceThread.set(true);//turn off the terminal
 		    			  attachRequest(port,out,msg);
 		    			  serviceThread.set(false);
 		    			  startTerminal();
-		    		  } else if (msg.sospfType == 3) {
-				    	  serviceThread.set(true);
-				    	  
-	    				  //update LSA and increase sequence number
-	    				  LSA lsa = lsd._store.get(rd.simulatedIPAddress);
-	    				  LSA lsa2 = lsd._store.get(msg.srcIP);
-	    				  LSA new_lsa = new LSA();
-	    				  LSA new_lsa2 = new LSA();
+		    		  } else if (msg.sospfType == 3) { //disconnect process
+		    			  
+		    			  disconnectRequest(msg, port);
+		    		  
+		    		  } else if (msg.sospfType == 4) { //removes quitting router from neighbors ports array
 	    				  
-	    				  for (LinkDescription link :  lsa.links) { //add all links exept the one to remove
-	    					  if (link.linkID.equals(msg.srcIP)) {
-	    						  System.out.println("\n"+ msg.srcIP + " has disconnected from port " +  (port-portPrefix));
-	    						  continue;
-	    					  }
-	    					  new_lsa.links.add(link);
-	    				  }
-	    				  
-	    				  for (LinkDescription link :  lsa2.links) { //add all links exept the one to remove
-	    					  if (link.linkID.equals(rd.simulatedIPAddress)) {
-	    						  //System.out.println("\nremoved own");
-	    						  continue;
-	    					  }
-	    					  new_lsa2.links.add(link);
-	    				  }
-	    				  
-	    				  if (new_lsa.links.size() == lsa.links.size()) System.out.println("\nTried to close alredy closed connection");
-				    	  
-	    				  serviceThread.set(false); //TODO
-		    			  startTerminal();
-	    				  
-		    			  new_lsa.linkStateID = lsa.linkStateID;
-		    			  new_lsa.lsaSeqNumber = lsa.lsaSeqNumber + 1;
-	    				  lsd._store.put(rd.simulatedIPAddress, new_lsa); //udpate lsa in own lsd
-	    				  new_lsa2.linkStateID = lsa2.linkStateID;
-	    				  new_lsa2.lsaSeqNumber = lsa2.lsaSeqNumber + 1;
-	    				  lsd._store.put(msg.srcIP, new_lsa2); //udpate lsa from source in current lsd to later send back as update to requesting router
-	    				  //System.out.println(lsd);
-				    	  broadcast_LSA(); //broadcast the change
-				    	  
-				    	  //remove link from ports
-				    	  ports[port-portPrefix] = null;
-				      } else {
+		    			  quitRequest(msg, port);
+				      
+		    		  } else {
 				    	  out.writeChars("Invalid request");
 				    	  out.flush();
 				      }
@@ -522,12 +486,10 @@ public class Router {
 	    			  attachRequest(port,out,msg);
 	    			  serviceThread.set(false);
 	    			  startTerminal();
-			      } else if (msg.sospfType == 3) {
+			      } else if (msg.sospfType == 3 || msg.sospfType == 4) {
 			    	  serviceThread.set(true);
-			    	  
     				  //means that no process at this port
 			    	  System.out.println("Process already removed");
-			    	  
 			    	  serviceThread.set(false);
 	    			  startTerminal();
 			      } else {
@@ -544,8 +506,7 @@ public class Router {
 						  lsa_latch.await();
 				  } catch (InterruptedException e) {
 					  e.printStackTrace();
-				  }
-				  
+				  }  
 				  
 				  //Creates a LSA_update msg for all ports with 2-way connection and sends the updates
 			      synchronized(lsa_broadcast){
@@ -557,8 +518,6 @@ public class Router {
 			      
 			      rd.status = null;
 		      }
-		      
-			  
 	      }
 	      
 	  } catch (IOException e) {
@@ -577,8 +536,10 @@ public class Router {
 		}
 	  }
   }
-  
-  private void broadcast_LSA() {
+
+//pass null when not called by quitRequest
+  //otherwise pass the simulated ip of the router to delete
+  private synchronized void broadcast_LSA() {
 	  SOSPFPacket lsa_update = new SOSPFPacket();
 	  lsa_update.srcProcessIP = rd.processIPAddress;
 	  lsa_update.srcIP = rd.simulatedIPAddress;
@@ -587,6 +548,7 @@ public class Router {
 	  lsa_update.lsaArray = new Vector<>();
 	  lsa_update.lsaArray.addAll(lsd._store.values());
 	  lsa_update.neighborID = rd.simulatedIPAddress;
+	  //lsa_update.toDelete = delete;
 	  
 	  for(int idx = 0;idx<ports.length;idx++) {
 		  Link l = ports[idx];
@@ -598,7 +560,6 @@ public class Router {
 			  }
 		  }
 	  }
-	  
   }
   
   private boolean handleStartMsg(short port, SOSPFPacket msg) {
@@ -644,7 +605,6 @@ public class Router {
 	  
 	  return send_LSA_update;
   }
-  
 
   private void attachRequest(int port, ObjectOutputStream out, SOSPFPacket msg) {
 	  try {
@@ -690,6 +650,68 @@ public class Router {
 		  
 	  }
   }
+  
+  private synchronized void disconnectRequest(SOSPFPacket msg, short port) {
+	  serviceThread.set(true);
+	  
+	  LSA curLsa = lsd._store.get(rd.simulatedIPAddress);
+	  LSA sourceLsa = lsd._store.get(msg.srcIP);
+	  LSA new_lsa = new LSA();
+	  LSA new_lsa2 = new LSA();
+	  
+	  for (LinkDescription link :  curLsa.links) { //add all links exept the one to remove
+		  if (link.linkID.equals(msg.srcIP)) {
+			  System.out.println("\n"+ msg.srcIP + " has disconnected from port " +  (port-portPrefix));
+			  continue;
+		  }
+		  new_lsa.links.add(link);
+	  }
+	  
+	  for (LinkDescription link :  sourceLsa.links) { //add all links exept the one to remove
+		  if (link.linkID.equals(rd.simulatedIPAddress)) {
+			  continue;
+		  }
+		  new_lsa2.links.add(link);
+	  }
+	  
+	  if (new_lsa.links.size() == curLsa.links.size()) System.out.println("\nTried to close alredy closed connection");
+	  
+	  serviceThread.set(false);
+	  startTerminal();
+	  
+	  new_lsa.linkStateID = curLsa.linkStateID;
+	  new_lsa.lsaSeqNumber = curLsa.lsaSeqNumber + 1;
+	  lsd._store.put(rd.simulatedIPAddress, new_lsa); //udpate lsa in own lsd
+	  new_lsa2.linkStateID = sourceLsa.linkStateID;
+	  new_lsa2.lsaSeqNumber = sourceLsa.lsaSeqNumber + 1;
+	  lsd._store.put(msg.srcIP, new_lsa2); //udpate lsa from source in current lsd to later send back as update to requesting router
+	  broadcast_LSA(); //broadcast the change
+	  //remove link from ports
+	  ports[port-portPrefix] = null;
+  }
+  
+  private synchronized void quitRequest(SOSPFPacket msg, short port) {
+	  serviceThread.set(true);
+	  LSA curLsa = lsd._store.get(rd.simulatedIPAddress);
+	  LinkedList<LinkDescription> newLinks = new LinkedList<>();
+	  for (LinkDescription link :  curLsa.links) { //add all links exept the one to remove
+		  if (link.linkID.equals(msg.srcIP)) {
+			  ports[link.portNum] = null;
+			  System.out.println("\n"+ msg.srcIP + " has disconnected from port " +  (port-portPrefix));
+			  continue;
+		  }
+		  newLinks.add(link);
+	  }
+	  LSA deleted = lsd._store.get(msg.srcIP);
+	  deleted.lsaSeqNumber = deleted.lsaSeqNumber + 1;
+	  deleted.deleted = true; //this tells us that it is deleted
+	  lsd._store.put(msg.srcIP, deleted);
+	  curLsa.links = newLinks;
+	  broadcast_LSA();// broadcast delete packet
+	  serviceThread.set(false);
+	  startTerminal();
+  }
+
 /**
    * broadcast Hello to neighbors
    */
@@ -724,8 +746,7 @@ public class Router {
    * <p/>
    * This command does trigger the link database synchronization
    */
-  private void processConnect(String processIP, short processPort,
-                              String simulatedIP) {
+  private void processConnect(String processIP, short processPort, String simulatedIP) {
 
   }
 
@@ -743,14 +764,24 @@ public class Router {
 	  }
   }
 
+  
+  //tells us if the router has an active connection on any of its ports
+  //used in processQuit
+  private boolean hasActiveConnection() {
+	  for(int i = 0; i < ports.length; i++) {
+		  if (ports[i] != null) {
+			  if(ports[i].router2.status != null) {
+				  return true;
+			  }
+		  }
+	  }
+	  return false;
+  }
+  
   /**
    * disconnect with all neighbors and quit the program
    */
   private void processQuit() {
-	  //TODO
-	  //needs to trigger LSD Synchronization and Multicast quit packets
-	  //I think i will do this by calling disconnect on all ports, needs to tolerate trying to disconnect 
-	  
 	  serviceThread.set(true);//turn off the terminal
 	  
       if (consoleReader != null){
@@ -761,16 +792,41 @@ public class Router {
           }
       }
       
+      if (hasActiveConnection()) {
+    	  SOSPFPacket msg = new SOSPFPacket();
+    	  msg.sospfType = 4;
+		  msg.srcIP = this.rd.simulatedIPAddress;
+		  msg.srcProcessIP = this.rd.processIPAddress; //TODO maybe remove
+		  msg.neighborID = this.rd.simulatedIPAddress;
+		  
+		  //send message to active connections to remove connection from ports
+		  synchronized(portListeners) {
+			  for(int i = 0; i < ports.length; i++) {
+				  if (ports[i] != null) {
+					  if (ports[i].router2.status != null) {
+						  msg.srcProcessPort = (short) i;
+						  msg.dstIP = ports[i].router2.simulatedIPAddress;
+						  portListeners[i].sendMsg(ports[i].router2.processPortNumber + getPortPrefix(msg.dstIP),msg);
+					  } else {
+						  ports[i] = null; //should never happen if no inconsistencies
+					  }
+				  }
+			  }
+		  }
+		  
+		  lsd._store.clear();//clear lsd store
+      }
+      
 	  //Turn off all 4 portListeners
 	  for(PortListener portListener: portListeners) {
 		  portListener.closeServerSocket();
 		  try {
-			portListener.join();
-		} catch (InterruptedException e) {
-			e.printStackTrace();
-		}
+			  portListener.join();
+		  } catch (InterruptedException e) {
+			  e.printStackTrace();
+		  }
 	  }
-	  //temporary successful exit for testing purposes
+	  
 	  System.out.println("Bye!");
 	  System.exit(0);
   }

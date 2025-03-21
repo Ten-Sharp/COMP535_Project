@@ -87,14 +87,15 @@ public class LinkStateDatabase {
 
   public String toString() {
     StringBuilder sb = new StringBuilder();
-    for (LSA lsa: _store.values()) {
-      sb.append(lsa.linkStateID).append(" (" + lsa.lsaSeqNumber + ")").append(":\n").append("-------------------------------\n");
-      for (LinkDescription ld : lsa.links) {
-        sb.append("\t\t"+ld.linkID).append(" | ").append(ld.portNum).append("\n");
-      }
-      sb.append("\n");
+    for (LSA lsa: _store.values()) {	
+    	if(!lsa.deleted) {
+    		sb.append(lsa.linkStateID).append(" (" + lsa.lsaSeqNumber + ")").append(":\n").append("-------------------------------\n");
+    		for (LinkDescription ld : lsa.links) {
+    			sb.append("\t\t"+ld.linkID).append(" | ").append(ld.portNum).append("\n");
+    		}
+    		sb.append("\n");
+    	}
     }
     return sb.toString();
   }
-
 }
