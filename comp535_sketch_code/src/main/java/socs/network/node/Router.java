@@ -370,7 +370,6 @@ public class Router {
    * The intuition is that if router2 is an unknown/anomaly router, it is always safe to reject the attached request from router2.
    */
   private void requestHandler(Socket clientSocket, short port, ServerSocket serverSocket) {
-	  
 	  ObjectInputStream in = null;
 	  ObjectOutputStream out = null;
 	  try {
@@ -492,7 +491,14 @@ public class Router {
 			    	  System.out.println("Process already removed");
 			    	  serviceThread.set(false);
 	    			  startTerminal();
-			      } else {
+	    			  
+			      } else if (msg.sospfType == 5) {
+	    			  serviceThread.set(true);
+	    			  connectRequest(port,out,msg);
+	    			  serviceThread.set(false);
+	    			  startTerminal();
+
+	    		  } else {
 			    	  out.writeChars("Invalid request");
 			    	  out.flush();
 			      }
@@ -516,7 +522,9 @@ public class Router {
 			    	  }
 			      }
 			      
-			      rd.status = null;
+			      if(rd.status == RouterStatus.INIT)
+			    	  rd.status = RouterStatus.TWO_WAY;
+//			      rd.status = null;
 		      }
 	      }
 	      
@@ -536,6 +544,74 @@ public class Router {
 		}
 	  }
   }
+
+private synchronized void connectRequest(short port, ObjectOutputStream out, SOSPFPacket msg) {
+	try {
+		  System.out.println("\nreceived Connect Request from " + msg.srcIP);
+  	  if (ports[port-portPrefix] != null) {
+
+  		  System.out.println("Requested port is occupied, the connection shall not be established");
+
+  		  out.writeUTF("Requested port is occupied, the connection shall not be established");
+  		  out.flush();
+
+  		  return;
+  	  }
+  	  System.out.print("Do you accept this request? (Y/N) \n");
+  	  
+        String answer = null;
+        while (answer == null) { // loop until input is available
+            answer = consoleInputQueue.peek(); // check the queue
+        }
+        consoleInputQueue.poll(); //remove from queue
+  	  
+  	  if (answer.equalsIgnoreCase("y")) {
+  		  System.out.println("You accepted the connect request;");
+  		  out.writeUTF("y"); //send response to client
+  		  out.flush();
+  		  //add the link on the server side
+  		  RouterDescription remote = new RouterDescription();
+  		  remote.processPortNumber = msg.srcProcessPort;
+  		  remote.processIPAddress = msg.srcProcessIP;
+  		  remote.simulatedIPAddress = msg.srcIP;
+  		  remote.status = RouterStatus.TWO_WAY;
+  		  RouterDescription local = new RouterDescription();
+  		  local.processPortNumber = (short) (port - portPrefix);
+  		  local.processIPAddress = rd.processIPAddress;
+  		  local.simulatedIPAddress = rd.simulatedIPAddress;
+  		  local.status = RouterStatus.TWO_WAY;
+  		  Link link = new Link(local, remote);
+  		  ports[port-portPrefix]= link;
+  		  
+  		  LSA lsa = lsd._store.get(rd.simulatedIPAddress);
+		  LSA new_lsa = new LSA();
+		  
+		  new_lsa.linkStateID = rd.simulatedIPAddress;
+		  new_lsa.lsaSeqNumber = lsa.lsaSeqNumber + 1;
+		  
+		  for(int idx = 0;idx<ports.length;idx++) {
+			  Link l = ports[idx];
+			  if(l!=null) {
+				  if(l.router2.status == RouterStatus.TWO_WAY) {
+					  LinkDescription desc = new LinkDescription();
+					  desc.portNum = idx;
+					  desc.linkID = l.router2.simulatedIPAddress;
+					  new_lsa.links.add(desc);
+				  }
+			  }
+		  }
+		  
+		  lsd._store.put(rd.simulatedIPAddress, new_lsa);
+  	  } else {
+  		  System.out.println("You rejected the connect request;");
+  		  out.writeUTF("n");
+  		  out.flush();
+  	  } 
+	  }catch(IOException e) {
+		  
+	  }
+	
+}
 
 //pass null when not called by quitRequest
   //otherwise pass the simulated ip of the router to delete
@@ -562,7 +638,7 @@ public class Router {
 	  }
   }
   
-  private boolean handleStartMsg(short port, SOSPFPacket msg) {
+  private synchronized boolean handleStartMsg(short port, SOSPFPacket msg) {
 	  boolean send_LSA_update = false;
 	  //update router descriptions in link
 	  int idx = port-portPrefix;
@@ -583,6 +659,7 @@ public class Router {
 				  //send msg
 				  portListeners[port-portPrefix].sendMsg(msg.srcProcessPort + getPortPrefix(msg.srcIP), send_msg);
 				  
+				  
 				  //SEND LSA UPDATE
 				  
 			  } else {
@@ -599,6 +676,8 @@ public class Router {
 			  }
 		  } else if(r2.status == RouterStatus.INIT){
 			  r2.status = RouterStatus.TWO_WAY;
+			  
+			  //MAYBE REMOVE
 			  send_LSA_update = true;
 		  }
 	  }
@@ -606,7 +685,7 @@ public class Router {
 	  return send_LSA_update;
   }
 
-  private void attachRequest(int port, ObjectOutputStream out, SOSPFPacket msg) {
+  private synchronized void attachRequest(int port, ObjectOutputStream out, SOSPFPacket msg) {
 	  try {
 		  System.out.println("\nreceived HELLO from " + msg.srcIP);
     	  if (ports[port-portPrefix] != null) {
@@ -710,6 +789,8 @@ public class Router {
 	  broadcast_LSA();// broadcast delete packet
 	  serviceThread.set(false);
 	  startTerminal();
+	  
+	  ports[port-portPrefix] = null;
   }
 
 /**
@@ -724,9 +805,10 @@ public class Router {
 	  }
 	  
 	  lsa_latch = new CountDownLatch(count);
-	  rd.status = RouterStatus.INIT;
+	  rd.status = RouterStatus.TWO_WAY;
 	  for(int idx = 0;idx<ports.length;idx++) {
 		  if(ports[idx] != null) {
+			  rd.status = RouterStatus.INIT;
 			  SOSPFPacket msg = new SOSPFPacket();
 			  msg.dstIP = ports[idx].router2.simulatedIPAddress;
 			  msg.sospfType = 0;
@@ -747,7 +829,124 @@ public class Router {
    * This command does trigger the link database synchronization
    */
   private void processConnect(String processIP, short processPort, String simulatedIP) {
+	  if(rd.status != RouterStatus.TWO_WAY) {
+		  System.out.println("The router must be started first");
+		  return;
+	  }
+	  
+	  if (simulatedIP.equals(rd.simulatedIPAddress)) {
+		  System.out.println("Cannot connect to self");
+		  return;
+	  }
+	  
+	  short homePort = getFreePort();
+	  if (homePort == -1) {
+		  //means there is no free port
+		  System.out.println("Ports are all occupied, the connection shall not be established");
+		  return;
+	  }
+	  
+	  Socket clientSocket = null;
+	  ObjectOutputStream out = null;
+	  ObjectInputStream in = null;
+	  short pre = getPortPrefix(simulatedIP);
+	
+	  if(pre == -1) {
+		  System.out.println("IP address must be in decimal IPv4 format: xxx.xxx.xxx.xxx");
+		  return;
+	  }
+	  try {
+		//we use the loopback address, to find the actual router, we use a mapping
+		//simulatedIP -> unique port on loopback address
+		clientSocket = new Socket("127.0.0.1", pre + processPort);
 
+		out = new ObjectOutputStream(clientSocket.getOutputStream());
+		in = new ObjectInputStream(clientSocket.getInputStream());
+		System.out.println("Sent message");
+		
+		SOSPFPacket msg = new SOSPFPacket();
+		msg.dstIP = simulatedIP;
+		msg.sospfType = 5;
+		msg.srcIP = this.rd.simulatedIPAddress;
+		msg.srcProcessIP = this.rd.processIPAddress;
+		msg.srcProcessPort = homePort;
+		
+		out.writeObject(msg);
+		out.flush();
+		boolean accepted = false;
+
+		String res = (String) in.readUTF(); //we wait for the response
+		if (res != null) {
+			if (res.equalsIgnoreCase("y")) {
+		        // Connection accepted, complete the link setup.
+				RouterDescription remote = new RouterDescription();
+				remote.processIPAddress = processIP;
+				remote.processPortNumber = processPort;
+				remote.simulatedIPAddress = simulatedIP;
+				remote.status = RouterStatus.TWO_WAY;
+				RouterDescription local = new RouterDescription();
+				local.processIPAddress = processIP;
+				local.processPortNumber = homePort;
+				local.simulatedIPAddress = rd.simulatedIPAddress;
+				local.status = RouterStatus.TWO_WAY;
+		        Link link = new Link(local, remote);
+		        ports[homePort] = link;
+		        accepted = true;
+		        System.out.println("Connection established with " + simulatedIP);
+		    } else {
+		        System.out.println("Your Connection request has been \nrejected;");
+		    }
+		}
+		
+		if(accepted) {
+			synchronized(ports){
+				LSA lsa = lsd._store.get(rd.simulatedIPAddress);
+				LSA new_lsa = new LSA();
+				  
+				new_lsa.linkStateID = rd.simulatedIPAddress;
+				new_lsa.lsaSeqNumber = lsa.lsaSeqNumber + 1;
+				  
+				for(int idx = 0;idx<ports.length;idx++) {
+					Link l = ports[idx];
+					if(l!=null) {
+						if(l.router2.status == RouterStatus.TWO_WAY) {
+							LinkDescription desc = new LinkDescription();
+							desc.portNum = idx;
+							desc.linkID = l.router2.simulatedIPAddress;
+							new_lsa.links.add(desc);
+						}
+					}
+				}
+				  
+				lsd._store.put(rd.simulatedIPAddress, new_lsa);
+				broadcast_LSA();
+			}
+		}
+		
+		
+		
+	  } catch (IOException e) {
+		System.out.println("Connection Error\nMake sure other router is live or that the IP address is valid");
+		e.printStackTrace();
+	  } finally {
+		//close our ressources
+		try {
+			if (clientSocket != null) {
+				clientSocket.close();
+			}
+			if (out != null) {
+				out.close();
+			}
+			if (in != null) {
+				in.close();
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	  }
+	  //send connect request (attach request) to remote router
+	  //if accepted remote sets to two-way, same here
+	  //exchange lsa updates
   }
 
   /**
@@ -758,7 +957,8 @@ public class Router {
 	  for(Link link : ports) {
 		  if(link != null) {
 			  System.out.println("\t"+link.router2.simulatedIPAddress + " - status: "+link.router2.status);
-		  	  System.out.println("\tPort number: "+link.router2.processPortNumber);
+			  System.out.println("\tOn Port: "+link.router2.processPortNumber);
+		  	  System.out.println("\tOn dest Port: "+link.router2.processPortNumber);
 		  }
 			  
 	  }
@@ -868,10 +1068,10 @@ public class Router {
 		              cmdLine[3] );
 		    } else if (command.equals("start")) {
 		      processStart();
-		    } else if (command.equals("connect ")) {
+		    } else if (command.startsWith("connect ")) {
 		      String[] cmdLine = command.split(" ");
 		      processConnect(cmdLine[1], Short.parseShort(cmdLine[2]),
-		              cmdLine[3]);
+		              cmdLine[3] );
 		    } else if (command.equals("neighbors")) {
 		      //output neighbors
 		      processNeighbors();
@@ -886,6 +1086,8 @@ public class Router {
       }
     } catch (Exception e) {
       e.printStackTrace();
+      System.out.println("\nInvalid Command Format\n");
+      terminal();
     }
   }
 }
