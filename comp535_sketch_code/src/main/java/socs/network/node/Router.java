@@ -772,6 +772,7 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
   private synchronized void quitRequest(SOSPFPacket msg, short port) {
 	  serviceThread.set(true);
 	  LSA curLsa = lsd._store.get(rd.simulatedIPAddress);
+	  curLsa.lsaSeqNumber = curLsa.lsaSeqNumber + 1;
 	  LinkedList<LinkDescription> newLinks = new LinkedList<>();
 	  for (LinkDescription link :  curLsa.links) { //add all links exept the one to remove
 		  if (link.linkID.equals(msg.srcIP)) {
@@ -781,11 +782,11 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 		  }
 		  newLinks.add(link);
 	  }
+	  curLsa.links = newLinks;
 	  LSA deleted = lsd._store.get(msg.srcIP);
 	  deleted.lsaSeqNumber = deleted.lsaSeqNumber + 1;
 	  deleted.deleted = true; //this tells us that it is deleted
 	  lsd._store.put(msg.srcIP, deleted);
-	  curLsa.links = newLinks;
 	  broadcast_LSA();// broadcast delete packet
 	  serviceThread.set(false);
 	  startTerminal();
