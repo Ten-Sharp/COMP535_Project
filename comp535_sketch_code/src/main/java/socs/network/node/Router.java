@@ -163,7 +163,10 @@ public class Router {
 		  } catch (UnknownHostException e) {
 			  e.printStackTrace();
 		  } catch (IOException e) {
-			e.printStackTrace();
+			  //this is done since a neighbor router may have quit
+			  //before this router had the chance to remove it from its ports
+			  LSA deleted = lsd._store.get(msg.dstIP);
+			  if (!deleted.deleted) e.printStackTrace();
 		  } catch (InterruptedException e) {
 			e.printStackTrace();
 		  } finally {
@@ -220,7 +223,7 @@ public class Router {
 	  }
 	  String result = lsd.getShortestPath(destinationIP);
 	  if (result == null) {
-		  System.out.println("No Path Found");
+		  System.out.println("No Path Found, make sure routers have been started");
 	  } else {
 		  System.out.println(result);  
 	  }
@@ -241,7 +244,7 @@ public class Router {
 	  
 	  //verify port has active connection
 	  if(link.router2.status == null) { //means that the router has not yet been started and we therefore cannot run disconnect
-		  System.out.println("The router has not yet been started and we therefore cannot run disconnect");
+		  System.out.println("No live connection at specified port");
 		  return;
 	  }
 	 
@@ -964,7 +967,47 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 			  
 	  }
   }
-
+  
+  private synchronized void updteWeight(String ip, Short port, int newWeight) {
+	  	if(newWeight < 1) {
+			System.out.println("New weight must be >= 1");
+			return;
+	  	}
+	  	if(ports[port].router2.status == null) {
+			System.out.println("The router must be started first");
+			return;
+		}
+		
+		if (!ports[port].router2.simulatedIPAddress.equals(ip)) {
+			System.out.println("This router is not linked with the specified router at the specified port");
+		}
+		
+		LSA self = lsd._store.get(rd.simulatedIPAddress);
+		LSA remote = lsd._store.get(ip);
+		if (remote == null) {
+			System.out.println("Specified IP address not found, make sure remote router is still live");
+			return;	
+		}
+		
+		//update weight for both LSAs
+		for (LinkDescription link: self.links) {
+			if(link.linkID.equals(ip)) {
+				link.weight = newWeight;
+			}
+		}
+		
+		for (LinkDescription link: remote.links) {
+			if(link.linkID.equals(rd.processIPAddress)) {
+				link.weight = newWeight;
+			}
+		}
+		
+		//udpate sequence numbers
+		self.lsaSeqNumber = self.lsaSeqNumber + 1;
+		remote.lsaSeqNumber = remote.lsaSeqNumber + 1;
+		
+		broadcast_LSA(); //broadcast changes
+  }
   
   //tells us if the router has an active connection on any of its ports
   //used in processQuit
@@ -1078,6 +1121,9 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 		      processNeighbors();
 		    } else if (command.equals("description")) {
 		    	description();
+		    } else if (command.startsWith("updateWeight ")) {
+			    String[] cmdLine = command.split(" ");
+			    updteWeight(cmdLine[1],Short.parseShort(cmdLine[2]),Integer.parseInt(cmdLine[3]));
 		    } else {
 		      //invalid command
 		      System.out.println("Invalid Command");
