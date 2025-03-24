@@ -256,7 +256,7 @@ public class Router {
 	  msg.dstIP = simulatedIP;
 	  msg.sospfType = 3;
 	  msg.srcIP = this.rd.simulatedIPAddress;
-	  msg.srcProcessIP = this.rd.processIPAddress; //TODO maybe remove
+	  msg.srcProcessIP = this.rd.processIPAddress;
 	  msg.srcProcessPort = portNumber;
 	  msg.neighborID = this.rd.simulatedIPAddress;
 	
@@ -977,6 +977,12 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 			System.out.println("New weight must be >= 1");
 			return;
 	  	}
+	 
+	  	if (ports[port] == null) {
+	  		System.out.println("No connection at requested port");
+	  		return;
+	  	}
+	  	
 	  	if(ports[port].router2.status == null) {
 			System.out.println("The router must be started first");
 			return;
@@ -1001,7 +1007,7 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 		}
 		
 		for (LinkDescription link: remote.links) {
-			if(link.linkID.equals(rd.processIPAddress)) {
+			if(link.linkID.equals(rd.simulatedIPAddress)) {
 				link.weight = newWeight;
 			}
 		}
@@ -1044,7 +1050,7 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
     	  SOSPFPacket msg = new SOSPFPacket();
     	  msg.sospfType = 4;
 		  msg.srcIP = this.rd.simulatedIPAddress;
-		  msg.srcProcessIP = this.rd.processIPAddress; //TODO maybe remove
+		  msg.srcProcessIP = this.rd.processIPAddress;
 		  msg.neighborID = this.rd.simulatedIPAddress;
 		  
 		  //send message to active connections to remove connection from ports
