@@ -390,7 +390,7 @@ public class Router {
 		      synchronized(ports) {
 		    	  if(ports[port-portPrefix] != null) {
 
-		    		  if(msg.sospfType == 0 && msg.srcIP.equals(ports[port-portPrefix].router2.simulatedIPAddress)) {
+		    		  if(msg.sospfType == 0) {
 		    			  
 		    			  boolean send_LSA_update = handleStartMsg(port,msg);
 		    			  
@@ -508,15 +508,18 @@ public class Router {
 		      }
 		      
 		      if(lsa_broadcast.get()) {
-		    	  
 		    	  try {
 					  Thread.sleep(200);
-					  if(rd.status == RouterStatus.INIT)
+					  if(rd.status == RouterStatus.INIT) {
 						  lsa_latch.await();
+						  rd.status = RouterStatus.TWO_WAY;
+					  }
+						  
 				  } catch (InterruptedException e) {
 					  e.printStackTrace();
 				  }  
-				  
+
+		    		  
 				  //Creates a LSA_update msg for all ports with 2-way connection and sends the updates
 			      synchronized(lsa_broadcast){
 			    	  if(lsa_broadcast.get()) {
@@ -525,10 +528,9 @@ public class Router {
 			    	  }
 			      }
 			      
-			      if(rd.status == RouterStatus.INIT)
-			    	  rd.status = RouterStatus.TWO_WAY;
-//			      rd.status = null;
+			      
 		      }
+		      
 	      }
 	      
 	  } catch (IOException e) {
@@ -684,7 +686,6 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 			  send_LSA_update = true;
 		  }
 	  }
-	  
 	  return send_LSA_update;
   }
 
@@ -804,7 +805,8 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 	  int count = 0;
 	  for(Link l : ports) {
 		  if(l!=null) {
-			  count++;
+			  if(l.router2.status != RouterStatus.TWO_WAY)
+				  count++;
 		  }
 	  }
 	  
@@ -812,15 +814,17 @@ private synchronized void connectRequest(short port, ObjectOutputStream out, SOS
 	  rd.status = RouterStatus.TWO_WAY;
 	  for(int idx = 0;idx<ports.length;idx++) {
 		  if(ports[idx] != null) {
-			  rd.status = RouterStatus.INIT;
-			  SOSPFPacket msg = new SOSPFPacket();
-			  msg.dstIP = ports[idx].router2.simulatedIPAddress;
-			  msg.sospfType = 0;
-			  msg.srcIP = this.rd.simulatedIPAddress;
-			  msg.srcProcessIP = this.rd.processIPAddress;
-			  msg.srcProcessPort = ports[idx].router1.processPortNumber;
-			  
-			  portListeners[idx].sendMsg(ports[idx].router2.processPortNumber + getPortPrefix(msg.dstIP),msg);
+			  if(ports[idx].router2.status != RouterStatus.TWO_WAY) {
+				  rd.status = RouterStatus.INIT;
+				  SOSPFPacket msg = new SOSPFPacket();
+				  msg.dstIP = ports[idx].router2.simulatedIPAddress;
+				  msg.sospfType = 0;
+				  msg.srcIP = this.rd.simulatedIPAddress;
+				  msg.srcProcessIP = this.rd.processIPAddress;
+				  msg.srcProcessPort = ports[idx].router1.processPortNumber;
+				  
+				  portListeners[idx].sendMsg(ports[idx].router2.processPortNumber + getPortPrefix(msg.dstIP),msg);
+			  }
 		  }
 	  }
 	  
